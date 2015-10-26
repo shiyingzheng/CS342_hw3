@@ -15,9 +15,15 @@
 
 #define BUFFER_SIZE 65537
 
+typedef struct
+{
+    char name[255];
+    int sock;
+} User;
+
 static char* name_message = "Please enter your name: ";
 static char* welcome_message = "Welcome to the chatroom!\n\n";
-static int current_users[1000];
+static User current_users[1000];
 static int num_users=0;
 pthread_mutex_t lock;
 
@@ -26,11 +32,33 @@ pthread_mutex_t lock;
 void broadcast(int origin_sock, char* message) {
     pthread_mutex_lock(&lock);
     for (int i = 0; i < num_users; i++){
-        int sock = current_users[i];
+        int sock = current_users[i].sock;
         if (sock != origin_sock){
             write(sock, message, strlen(message));
         }
     }
+    pthread_mutex_unlock(&lock);
+}
+
+void list_users(int origin_sock) {
+    char message[BUFFER_SIZE];
+    pthread_mutex_lock(&lock);
+    if (num_users == 1){
+        strcpy(message, "You are the first here!\n");
+    }
+    else {
+        strcpy(message, "Currently in the chatroom:\n");
+        for (int i = 0; i < num_users; i++){
+            int sock = current_users[i].sock;
+            if (sock != origin_sock){
+                strcat(message, "\t");
+                strcat(message, current_users[i].name);
+                strcat(message, "\n");
+            }
+        }
+    }
+    strcat(message, "\n");
+    write(origin_sock, message, strlen(message));
     pthread_mutex_unlock(&lock);
 }
 
@@ -40,23 +68,14 @@ void* chat(void* sockptr) {
     int sock = *(int*) sockptr;
     free(sockptr);
 
-    // put socket into user list
-    pthread_mutex_lock(&lock);
-    current_users[num_users] = sock;
-    num_users++;
-    pthread_mutex_unlock(&lock);
-
     // Ask for user name
     int recv_count = 0;
     char name[255];
+    // need to fix this
     while (!recv_count) {
         write(sock, name_message, strlen(name_message));
         recv_count = recv(sock, name, 255, 0);
-        if(recv_count<0) {
-            perror("Receive failed");
-            return NULL;
-        }
-        if (!strcmp(name, "\n")){
+        if(recv_count<3) {
             recv_count = 0;
         }
         else {
@@ -65,6 +84,18 @@ void* chat(void* sockptr) {
     }
 
     name[recv_count-2]=0;
+
+    // put socket into user list
+    pthread_mutex_lock(&lock);
+    User *cur = (User *)malloc(sizeof(User));
+    strcpy(cur->name, name);
+    cur->sock = sock;
+    current_users[num_users] = *cur;
+    num_users++;
+    pthread_mutex_unlock(&lock);
+
+    // print list of people who are in chatroom
+    list_users(sock);
 
     // tell everyone user has entered
     char enter_notification[strlen(name)+50];
@@ -108,7 +139,7 @@ void* chat(void* sockptr) {
     // When user leaves the chat room, takes self off list
     pthread_mutex_lock(&lock);
     for (int i = 0; i < num_users; i++){
-        if (current_users[i] == sock){
+        if (current_users[i].sock == sock){
             if (num_users > 0){
                 current_users[i] = current_users[num_users-1];
             }
@@ -120,7 +151,7 @@ void* chat(void* sockptr) {
 
     // notifies everyone else that I am leaving
     char leave_notification[strlen(name)+50];
-    strcpy(leave_notification, "-----> ");
+    strcpy(leave_notification, "<----- ");
     strcat(leave_notification, name);
     strcat(leave_notification, " has exited\n");
     broadcast(sock, leave_notification);
